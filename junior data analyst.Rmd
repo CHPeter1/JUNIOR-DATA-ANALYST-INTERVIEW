@@ -1,0 +1,392 @@
+---
+title: "Jr Data Analyst"
+author: "NGAIRA"
+date: "`r Sys.Date()`"
+output: word_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+require(readr)
+require(tidyverse)
+require(magrittr)
+require(ggplot2)
+require(gtsummary)
+require(reshape2)
+require(officer)
+require(deSolve)
+require(DiagrammeR)
+```
+
+```{r}
+library(readxl)
+Junior_Data_Analyst_Data_1_ <- read_excel("C:/Users/ADMIN/Downloads/Junior Data Analyst _ Data (1).xlsx")
+View(Junior_Data_Analyst_Data_1_)
+colnames(Junior_Data_Analyst_Data_1_)<- tolower(colnames(Junior_Data_Analyst_Data_1_))
+
+# Rename columns
+colnames(Junior_Data_Analyst_Data_1_) <- c("hour", "date/time","solar","usage")    
+```
+
+                                               
+# Calculate average solar generation and electricity usage for each hour
+```{r}
+Data_Analyst <- aggregate(. ~ hour, data = Junior_Data_Analyst_Data_1_, FUN = mean)
+
+Data_Analyst$`date/time` <- as.POSIXct(Data_Analyst$`date/time`)
+```
+
+
+# Create plot
+```{r}
+ggplot(Data_Analyst, aes(x = hour)) +
+  geom_line(aes(y = solar, color = "Solar Electricity Generation"), size = 1) +
+  geom_line(aes(y = usage, color = "Electricity Usage"), linetype = "dashed", size = 1) +
+  scale_color_manual(values = c("Solar Electricity Generation" = "blue", "Electricity Usage" = "red")) +
+  labs(title = "Average Solar Electricity Generation vs Electricity Usage by Hour",
+       x = "Hour of the Day",
+       y = "Average Amount",
+       color = "Type") +
+  theme_minimal()
+```
+
+# Create a boxplot to investigate outliers
+# combine plots
+```{r}
+par(mfrow = c(1, 2)) 
+boxplot(Data_Analyst$solar, main= "Solar Electricity generation", ylab = "Amount", col = "lightgreen")
+boxplot(Data_Analyst$usage, main= "Electricity usage", ylab = "Amount", col = "lightblue")
+```
+
+
+##PRESENCE OF AN OUTLIER
+# Define a function for Winsorization
+```{r}
+winsorize <- function(x, threshold = 0.95) {
+  quantiles <- quantile(x, probs = c(threshold, 1 - threshold))
+  x[x > quantiles[2]] <- quantiles[2]
+  x[x < quantiles[1]] <- quantiles[1]
+  return(x)
+}
+```
+
+#APPLY WINSORIZE
+# Apply Winsorization to solar generation and electricity usage columns
+```{r}
+Data_Analyst$solar <- winsorize(Data_Analyst$solar)
+Data_Analyst$usage <- winsorize(Data_Analyst$usage)
+```
+
+
+# Recalculate average data after Winsorization
+```{r}
+Data_Analyst<- aggregate(. ~ hour, data = Data_Analyst, FUN = mean)
+view(Data_Analyst)
+```
+
+```{r}
+# Create plot
+ggplot(Data_Analyst, aes(x = hour)) +
+  geom_line(aes(y = solar, color = "Solar Electricity Generation"), size = 1) +
+  geom_line(aes(y = usage, color = "Electricity Usage"), linetype = "dashed", size = 1) +
+  scale_color_manual(values = c("Solar Electricity Generation" = "blue", "Electricity Usage" = "red")) +
+  labs(title = "Average Solar Electricity Generation vs Electricity Usage by Hour",
+       x = "Hour of the Day",
+       y = "Average Amount",
+       color = "Type") +
+  theme_minimal()  
+```
+
+
+#CONFIRM PRESENCE OF OUTLIERS
+# Create a boxplot to investigate outliers
+# combine plots
+```{r}
+par(mfrow = c(1, 2)) 
+boxplot(Data_Analyst$solar, main= "Solar Electricity generation", ylab = "Amount", col = "lightgreen")
+boxplot(Data_Analyst$usage, main= "Electricity usage", ylab = "Amount", col = "lightblue")
+```
+
+
+# Calculate the amount of electricity needed to be bought for each hour
+```{r}
+Data_Analyst$buy_from_provider <- pmax(0, Data_Analyst$usage - Data_Analyst$solar)
+
+# Recalculate average data after adding buy_from_provider column
+Data_Analyst <- aggregate(. ~ hour, data = Data_Analyst, FUN = sum)
+
+# Create plot
+ggplot(Data_Analyst, aes(x = hour)) +
+  geom_line(aes(y = buy_from_provider, color = "Electricity Bought"), size = 1) +
+  scale_color_manual(values = c("Electricity Bought" = "green")) +
+  labs(title = "Amount of Electricity Bought from Provider by Hour",
+       x = "Hour of the Day",
+       y = "Amount of Electricity Bought (kWh)",
+       color = "Type") +
+  theme_minimal()
+```
+
+
+
+# Calculate the excess solar electricity generated over electricity used for each hour in 2020
+```{r}
+Data_Analyst$excess_solar <- pmax(0, Data_Analyst$solar - Data_Analyst$usage)
+
+# Summarize excess solar electricity generated over electricity used for each hour in 2020
+excess_solar_2020 <- aggregate(excess_solar ~ hour, data = Data_Analyst, FUN = sum)
+
+# Create plot
+ggplot(excess_solar_2020, aes(x = hour, y = excess_solar)) +
+  geom_line(color = "blue") +
+  labs(title = "Excess Solar Electricity Generated Over Electricity Used in 2020",
+       x = "Hour of the Day",
+       y = "Excess Solar Electricity (kWh)") +
+  theme_minimal()
+```
+
+#Model the cumulative battery charge level (measured in kWh) for each hour over 2020, assuming a battery had already been installed.
+#We iterate through each row of the data frame data, representing each hour.
+#For each hour, we calculate the net energy available for charging the battery by subtracting the electricity usage from the solar generation.
+#We then calculate the change in the battery charge level based on the net energy and the battery's capacity, ensuring that the charge level does not exceed the capacity.
+#We update the cumulative charge level accordingly.
+#We store the hourly charge levels in a vector and create a data frame with timestamps and charge levels.
+#Finally, we plot the cumulative battery charge level over time
+
+# Define battery parameters
+```{r}
+battery_capacity <- 1000  # kWh (example capacity)
+
+# Convert 'timestamp' to a POSIXct object if it's not already
+Data_Analyst$`date/time` <- as.POSIXct(Data_Analyst$`date/time`)
+```
+
+```{r}
+# Initialize cumulative charge level
+cumulative_charge <- 0
+
+# Initialize vector to store hourly charge levels
+hourly_charge_levels <- numeric()
+```
+
+```{r}
+# Iterate through each hour of data
+for (i in 1:nrow(Data_Analyst)) {
+  # Calculate net energy (solar generation - electricity usage)
+  net_energy <- Data_Analyst$solar[i] - Data_Analyst$usage[i]
+}
+```
+  
+  # Calculate charge level change based on net energy and battery capacity
+```{r}
+  charge_change <- min(battery_capacity - cumulative_charge, max(-cumulative_charge, net_energy))
+  
+  # Update cumulative charge level
+  cumulative_charge <- cumulative_charge + charge_change
+  
+  # Store hourly charge level
+  hourly_charge_levels <- c(hourly_charge_levels, cumulative_charge)
+
+```
+
+
+# Create data frame with hourly charge levels
+```{r}
+charge_data <- data.frame(timestamp = Data_Analyst$`date/time`, charge_level = hourly_charge_levels)
+```
+
+```{r}
+
+# Plot cumulative battery charge level
+ggplot(charge_data, aes(x = timestamp, y = charge_level)) +
+  geom_line(color = "blue") +
+  labs(title = "Cumulative Battery Charge Level",
+       x = "Date",
+       y = "Cumulative Charge Level (kWh)") +
+  theme_minimal()
+
+```
+
+#To calculate the amount of electricity that would have been bought from the electricity provider for each hour, assuming a battery had already been installed, we need to consider the scenario where the battery is not able to meet the electricity demand entirely. In this case, any shortfall in meeting the demand with solar energy and the battery's stored energy would need to be supplemented by purchasing electricity from the provider. Here's how you can calculate it in R:
+
+# Assuming 'data' contains columns 'timestamp', 'solar', 'usage', and 'charge_level'
+```{r}
+# Define battery parameters
+battery_capacity <- 1000  # kWh (example capacity)
+
+# Initialize vector to store amount of electricity bought from provider for each hour
+electricity_bought <- numeric()
+
+# Iterate through each hour of data
+for (i in 1:nrow(Data_Analyst)) {
+  # Calculate net energy (solar generation - electricity usage)
+  net_energy <- Data_Analyst$solar[i] - Data_Analyst$usage[i]
+}
+```
+  
+  # Calculate available energy from battery
+```{r}
+  battery_energy <- min(battery_capacity, Data_Analyst$charge_level[i])
+```
+
+```{r}
+  # Calculate total available energy (solar + battery)
+  total_energy <- Data_Analyst$solar[i] + battery_energy
+```
+
+```{r}
+  # Calculate amount of electricity bought from provider (if shortfall)
+  buy_from_provider <- max(0, Data_Analyst$usage[i] - total_energy)
+  
+  # Store amount of electricity bought from provider
+  electricity_bought <- c(electricity_bought, buy_from_provider)
+
+```
+
+```{r}
+# Create data frame with amount of electricity bought from provider for each hour
+bought_data <- data.frame(timestamp = Data_Analyst$`date/time`, electricity_bought = electricity_bought)
+```
+```{r}
+# Plot amount of electricity bought from provider
+ggplot(bought_data, aes(x = timestamp, y = electricity_bought)) +
+  geom_line(color = "red") +
+  labs(title = "Amount of Electricity Bought from Provider",
+       x = "Date",
+       y = "Electricity Bought (kWh)") +
+  theme_minimal()
+```
+
+#We iterate through each row of the data frame data, representing each hour.
+#For each hour, we calculate the total available energy, which includes energy generated by solar and stored energy in the battery.
+#We calculate the amount of electricity that needs to be bought from the provider to meet the electricity demand not covered by solar and battery energy.
+#We store the amount of electricity bought from the provider in a vector and create a data frame with timestamps and electricity bought values.
+#Finally, we plot the amount of electricity bought from the provider over time.
+
+
+
+#To calculate the amount of electricity that would have been bought from the electricity provider for each hour, assuming a battery had already been installed, we need to consider the scenario where the battery is not able to meet the electricity demand entirely. In this case, any shortfall in meeting the demand with solar energy and the battery's stored energy would need to be supplemented by purchasing electricity from the provider. 
+
+```{r}
+# Define battery parameters
+battery_capacity <- 1000  # kWh (example capacity)
+
+
+
+# Initialize vector to store amount of electricity bought from provider for each hour
+electricity_bought <- numeric()
+
+# Iterate through each hour of data
+for (i in 1:nrow(Data_Analyst)) {
+  # Calculate net energy (solar generation - electricity usage)
+  net_energy <- Data_Analyst$solar[i] - Data_Analyst$usage[i]
+  
+  # Calculate available energy from battery
+  battery_energy <- min(battery_capacity, Data_Analyst$charge_level[i])
+  
+  # Calculate total available energy (solar + battery)
+  total_energy <- Data_Analyst$solar[i] + battery_energy
+  
+  # Calculate amount of electricity bought from provider (if shortfall)
+  buy_from_provider <- max(0, Data_Analyst$usage[i] - total_energy)
+  
+  # Store amount of electricity bought from provider
+  electricity_bought <- c(electricity_bought, buy_from_provider)
+}
+
+# Create data frame with amount of electricity bought from provider for each hour
+bought_data <- data.frame(timestamp = Data_Analyst$`date/time`, electricity_bought = electricity_bought)
+
+# Plot amount of electricity bought from provider
+ggplot(bought_data, aes(x = timestamp, y = electricity_bought)) +
+  geom_line(color = "red") +
+  labs(title = "Amount of Electricity Bought from Provider",
+       x = "Date",
+       y = "Electricity Bought (kWh)") +
+  theme_minimal()
+```
+
+
+#To calculate the savings over 2020 from installing a battery compared to using existing solar panels alone, we need to consider the difference in electricity costs between purchasing electricity from the provider and using the battery to store excess solar energy.
+
+#Obtain electricity prices for 1 January 2022.
+#Calculate the total amount of electricity bought from the provider with and without the battery.
+#Multiply the difference in electricity bought by the price difference to get the savings.
+```{r}
+# Define electricity prices
+electricity_price_2022 <- 0.12  # $/kWh (example price for 1 January 2022)
+
+# Convert 'timestamp' to a POSIXct object if it's not already
+Data_Analyst$timestamp <- as.POSIXct(Data_Analyst$`date/time`)
+
+# Initialize vector to store amount of electricity bought from provider with and without the battery
+electricity_bought_without_battery <- numeric()
+electricity_bought_with_battery <- numeric()
+
+# Iterate through each hour of data
+for (i in 1:nrow(Data_Analyst)) {
+  # Calculate net energy (solar generation - electricity usage)
+  net_energy <- Data_Analyst$solar[i] - Data_Analyst$usage[i]
+  
+  # Calculate available energy from battery
+  battery_energy <- min(battery_capacity, Data_Analyst$charge_level[i])
+  
+  # Calculate total available energy (solar + battery)
+  total_energy <- Data_Analyst$solar[i] + battery_energy
+  
+  # Calculate amount of electricity bought from provider without the battery
+  buy_from_provider_without_battery <- max(0, Data_Analyst$usage[i] - Data_Analyst$solar[i])
+  
+  # Calculate amount of electricity bought from provider with the battery
+  buy_from_provider_with_battery <- max(0, Data_Analyst$usage[i] - total_energy)
+  
+  # Store amounts of electricity bought from provider
+  electricity_bought_without_battery <- c(electricity_bought_without_battery, buy_from_provider_without_battery)
+  electricity_bought_with_battery <- c(electricity_bought_with_battery, buy_from_provider_with_battery)
+}
+
+# Calculate total electricity cost without the battery
+total_cost_without_battery <- sum(electricity_bought_without_battery) * electricity_price_2022
+
+# Calculate total electricity cost with the battery
+total_cost_with_battery <- sum(electricity_bought_with_battery) * electricity_price_2022
+
+# Calculate savings
+savings <- total_cost_without_battery - total_cost_with_battery
+
+# Print savings
+cat("Savings over 2020 from installing a battery compared to using existing solar panels alone: $", savings, "\n")
+```
+
+#To tabulate the data appropriately and then produce a chart to illustrate the monthly solar generation, electricity usage, electricity purchased from the electricity provider (without battery), and electricity purchased from the electricity provider (with battery) on a monthly basis for the calendar year,
+#Aggregate the data by month to calculate monthly totals.
+#Create a data frame or data table to store the monthly totals.
+#Produce a chart to visualize the monthly data.
+```{r}
+# Convert 'timestamp' to a POSIXct object if it's not already
+Data_Analyst$timestamp <- as.POSIXct(Data_Analyst$`date/time`)
+
+# Extract month and year from timestamp
+Data_Analyst$month <- format(Data_Analyst$timestamp, "%Y-%m")
+
+# Aggregate data by month to calculate monthly totals
+monthly_totals <- aggregate(cbind(solar, usage, buy_from_provider_without_battery, buy_from_provider_with_battery) ~ month, data = Data_Analyst, FUN = sum)
+
+# Plot monthly data
+ggplot(monthly_totals, aes(x = month)) +
+  geom_line(aes(y = solar, color = "Solar Generation"), size = 1) +
+  geom_line(aes(y = usage, color = "Electricity Usage"), size = 1) +
+  geom_line(aes(y = buy_from_provider_without_battery, color = "Electricity Purchased (No Battery)"), size = 1, linetype = "dashed") +
+  geom_line(aes(y = buy_from_provider_with_battery, color = "Electricity Purchased (With Battery)"), size = 1, linetype = "dashed") +
+  labs(title = "Monthly Electricity Data",
+       x = "Month",
+       y = "Monthly Amount (kWh)",
+       color = "Type") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+
+
+
